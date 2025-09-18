@@ -1,0 +1,13 @@
+providers:
+  - name: home_depot
+    type: html
+    search: "https://www.homedepot.com/s/{q}"
+    selectors:
+      price: ".price-format__large-price, [data-testid='price-value']"
+      title: "a[data-pod-type='pr']"
+  - name: lowes
+    type: html
+    search: "https://www.lowes.com/search?searchTerm={q}"
+    selectors:
+      price: ".price__dollars, [data-testid='item-price']"
+      title: "a[data-r='ProductCard']"
