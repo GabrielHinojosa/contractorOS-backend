@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+httpx
+beautifulsoup4
+pyyaml
+rapidfuzz
