@@ -1,57 +1,60 @@
-import os, re, json, base64
-from typing import List, Dict, Any, Optional
+import os, re, json, base64, time
+from typing import List, Dict, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx, yaml
 from rapidfuzz import process, fuzz
 
-# --------- Environment ----------
+# ---------- env ----------
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 TIMEOUT         = float(os.getenv("HTTP_TIMEOUT", "20"))
 
-# --------- App/CORS ----------
+# ---------- app / cors ----------
 app = FastAPI(title="ContractorOS API", version="1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_ORIGIN] if FRONTEND_ORIGIN != "*" else ["*"],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# ---------- config ----------
 def load_yaml(path: str) -> dict:
-    if not os.path.exists(path): return {}
-    with open(path, "r", encoding="utf-8") as f: return yaml.safe_load(f) or {}
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 CONF      = load_yaml("materials.yaml")
 CATALOG   = CONF.get("catalog") or {}
 SYN       = CONF.get("synonyms") or {}
-PROVIDERS = load_yaml("providers.yaml").get("providers") or []  # kept empty for compliant MVP
+PROVIDERS = load_yaml("providers.yaml").get("providers") or []
 
-# --------- Fuzzy mapping ----------
+# ---------- canonical map ----------
 CANON: Dict[str, str] = {}
 for sku, data in CATALOG.items():
     CANON[data["name"].lower()] = sku
 for human, variants in SYN.items():
-    # try to map variants to a known sku by name start
-    sku_guess = None
+    candidate = None
     for sku, d in CATALOG.items():
         if d["name"].lower().startswith(human.lower()):
-            sku_guess = sku
+            candidate = sku
             break
     for v in variants:
-        if sku_guess:
-            CANON[v.lower()] = sku_guess
+        if candidate:
+            CANON[v.lower()] = candidate
 
 def to_sku(text: str) -> Optional[str]:
     t = (text or "").lower().strip()
-    if t in CANON: return CANON[t]
+    if t in CANON:
+        return CANON[t]
     got = process.extractOne(t, list(CANON.keys()), scorer=fuzz.WRatio)
     if got and got[1] >= 80:
         return CANON.get(got[0])
-
-    # also try catalog item names
     names = [CATALOG[k]["name"].lower() for k in CATALOG]
     got2 = process.extractOne(t, names, scorer=fuzz.WRatio)
     if got2 and got2[1] >= 85:
@@ -65,7 +68,7 @@ def parse_qty(line: str) -> float:
     m = re.search(r"(^|\\b)(\\d+(?:\\.\\d+)?)", line)
     return float(m.group(2)) if m else 1.0
 
-# --------- Models ----------
+# ---------- models ----------
 class Item(BaseModel):
     name: str
     qty: float
@@ -85,7 +88,38 @@ class QuoteReq(BaseModel):
     markup_pct: float = 15.0
     tax_pct: float = 8.25
 
-# --------- Routes ----------
+# ---------- openai helper with retry/backoff ----------
+def _openai_chat(json_payload: dict) -> str:
+    if not OPENAI_API_KEY:
+        raise HTTPException(400, "OPENAI_API_KEY not set")
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    last_err = None
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=TIMEOUT) as client:
+                r = client.post("https://api.openai.com/v1/chat/completions",
+                                headers=headers, json=json_payload)
+                if r.status_code == 429:
+                    wait = int(r.headers.get("retry-after", "1"))
+                    time.sleep(min(wait, 5) * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"].strip()
+        except httpx.HTTPStatusError as e:
+            last_err = e
+            if e.response is not None and e.response.status_code == 429:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            break
+        except Exception as e:
+            last_err = e
+            break
+    if isinstance(last_err, httpx.HTTPStatusError) and last_err.response is not None \
+       and last_err.response.status_code == 429:
+        raise HTTPException(429, "Rate limited by OpenAI. Try again shortly.")
+    raise HTTPException(502, f"Upstream error: {last_err}")
+
+# ---------- routes ----------
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -93,8 +127,6 @@ def health():
 @app.post("/analyze_text")
 def analyze_text(req: AnalyzeTextReq):
     items = []
-
-    # If an API key exists, try OpenAI for smarter parsing
     if OPENAI_API_KEY:
         prompt = f"""
 Extract a bill of materials from this text as a JSON array.
@@ -103,19 +135,18 @@ Your SKU key options are: {list(CATALOG.keys())}
 Text:
 {req.query}
 """
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        body = {"model": OPENAI_MODEL, "messages":[{"role":"user","content": prompt}], "temperature":0.1}
+        body = {"model": OPENAI_MODEL,
+                "messages":[{"role":"user","content": prompt}],
+                "temperature":0.1}
         try:
-            with httpx.Client(timeout=TIMEOUT) as client:
-                r = client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
-                r.raise_for_status()
-                content = r.json()["choices"][0]["message"]["content"].strip()
-                cleaned = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
-                items = json.loads(cleaned)
+            content = _openai_chat(body)
+            cleaned = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
+            items = json.loads(cleaned)
+        except HTTPException:
+            items = []
         except Exception:
             items = []
 
-    # Fallback: rules + fuzzy
     if not items:
         for raw in [l.strip("-• ").strip() for l in req.query.splitlines() if l.strip()]:
             qty = parse_qty(raw)
@@ -135,19 +166,26 @@ async def analyze_image(file: UploadFile = File(...), zip: str = Form("78413")):
     b64 = base64.b64encode(content).decode("utf-8")
     prompt = f"""Extract a bill of materials as JSON array with fields: name, qty (number), unit (string), canonical_hint (closest SKU).
 Your SKU key options are: {list(CATALOG.keys())}"""
+
     body = {
         "model": OPENAI_MODEL,
-        "messages":[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url": f"data:{mime};base64,{b64}"}}]}],
+        "messages":[
+            {"role":"user","content":[
+                {"type":"text","text":prompt},
+                {"type":"image_url","image_url":{"url": f"data:{mime};base64,{b64}"}}
+            ]}
+        ],
         "temperature":0.1
     }
-    headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type":"application/json"}
-    with httpx.Client(timeout=TIMEOUT) as client:
-        r = client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
-        r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"].strip()
+
     try:
-        s = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
-        items = json.loads(s)
+        content = _openai_chat(body)
+        cleaned = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
+        items = json.loads(cleaned)
+    except HTTPException as e:
+        if e.status_code == 429:
+            raise
+        items = []
     except Exception:
         items = []
     return {"items": items, "zip": zip}
@@ -171,11 +209,11 @@ def price(req: PriceReq):
 def quote(req: QuoteReq):
     subtotal = 0.0
     for it in req.items:
-        price = None
+        unit_price = None
         sku = it.canonical_hint or to_sku(it.name) or ""
         if sku and sku in CATALOG and CATALOG[sku].get("vendors"):
-            price = CATALOG[sku]["vendors"][0]["price"]
-        subtotal += (float(it.qty) * float(price or 0.0))
+            unit_price = float(CATALOG[sku]["vendors"][0]["price"])
+        subtotal += (float(it.qty) * float(unit_price or 0.0))
     markup = subtotal * (req.markup_pct/100.0)
     tax    = (subtotal + markup) * (req.tax_pct/100.0)
     total  = subtotal + markup + tax
