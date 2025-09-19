@@ -1,0 +1,11 @@
+catalog:
+  4x4_post_8:
+    name: "4x4x8 Treated Post"
+    unit: "each"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 13.77 }
+  quikrete_50lb:
+    name: "Quikrete 50 lb"
+    unit: "bag"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 5.25 }
