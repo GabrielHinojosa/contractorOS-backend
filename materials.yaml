@@ -4,8 +4,55 @@ catalog:
     unit: "each"
     vendors:
       - { store: "Catalog", zipPrefix: "784", price: 13.77 }
+
+  4x4_post_10:
+    name: "4x4x10 Treated Post"
+    unit: "each"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 19.45 }
+
+  picket_treated:
+    name: "Fence picket (treated)"
+    unit: "each"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 2.48 }
+
   quikrete_50lb:
     name: "Quikrete 50 lb"
     unit: "bag"
     vendors:
       - { store: "Catalog", zipPrefix: "784", price: 5.25 }
+
+  osb_716_4x8:
+    name: "OSB Sheathing 7/16\" 4x8"
+    unit: "sheet"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 13.20 }
+
+  2x4_stud_92:
+    name: "2x4 Stud 92-5/8\""
+    unit: "each"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 3.79 }
+
+  2x4_plate_lf:
+    name: "2x4 Plate (linear ft)"
+    unit: "lf"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 0.92 }
+
+  2x1012_joist:
+    name: "2x10x12 Joist"
+    unit: "each"
+    vendors:
+      - { store: "Catalog", zipPrefix: "784", price: 20.50 }
+
+# optional: human aliases that help the fuzzy matcher
+synonyms:
+  "4x4x8": ["4x4 post 8", "4 in x 4 in x 8 ft", "4x4 8ft", "4x4x8 treated"]
+  "4x4x10": ["4x4 post 10", "4x4 10ft"]
+  "quikrete 50lb": ["quikrete 50 lb", "cement 50 lb", "bag of cement"]
+  "osb 7/16 4x8": ["osb 7/16", "7/16 osb", "sheathing 7/16", "osb 716"]
+  "2x4 stud 92": ["2x4 studs", "92-5/8 stud", "92 5/8 stud"]
+  "2x4 plate": ["2x4 plate lf", "2x4 linear feet"]
+  "2x10x12": ["2x10 joist 12"]
